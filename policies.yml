@@ -1,0 +1,8 @@
+policies:
+  - id: block_high_risk_inputs
+    description: "Block requests when input moderation risk is 0.7 or higher."
+    condition:
+      min_moderation_score: 0.7
+    action: deny
+    severity: high
+    enabled: true

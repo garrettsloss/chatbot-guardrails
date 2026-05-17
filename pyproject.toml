@@ -1,0 +1,22 @@
+[project]
+name = "chatbot-guardrails"
+version = "0.1.0"
+description = "Modular chatbot guardrail architecture with strict shared interfaces."
+requires-python = ">=3.11"
+license = "MIT"
+
+[project.dependencies]
+pydantic = ">=2.0"
+fastapi = "*"
+pyjwt = "*"
+bcrypt = "*"
+pyyaml = "*"
+aioredis = "*"
+httpx = "*"
+
+[project.scripts]
+chatbot-guardrails = "cli:main"
+
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
