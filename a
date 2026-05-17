@@ -1,0 +1,15 @@
+[35m.env.example[m[36m:[mEMBEDDING_MODEL=text-[1;31membed[mding-3-large
+[35mREADME.md[m[36m:[m- `rag` - vector context retrieval and [1;31membed[mdings abstraction
+[35mREADME.md[m[36m:[m- `EMBEDDING_MODEL` — [1;31membed[mding model name (default `text-[1;31membed[mding-3-large`).
+[35mcli.py[m[36m:[m    async def search(self, [1;31membed[mding: list[float], top_k: int, metadata_filter: dict[str, Any] | None = None) -> list[ContextDocument]:
+[35mcli.py[m[36m:[m    retriever = ContextRetriever(OpenAIEmbeddingProvider(config.api_key, config.[1;31membed[mding_model), InMemoryVectorDB())
+[35mcore/config.py[m[36m:[m    [1;31membed[mding_model: str = Field("text-[1;31membed[mding-3-large", env="EMBEDDING_MODEL")
+[35mrag/context_retrieval.py[m[36m:[m    async def search(self, [1;31membed[mding: list[float], top_k: int, metadata_filter: dict[str, Any] | None = None) -> list[ContextDocument]:
+[35mrag/context_retrieval.py[m[36m:[m    async def [1;31membed[m(self, text: str) -> list[float]:
+[35mrag/context_retrieval.py[m[36m:[m    def __init__(self, [1;31membed[mding_provider: EmbeddingProvider, vector_db: VectorDBClient, max_tokens: int = 1500) -> None:
+[35mrag/context_retrieval.py[m[36m:[m        self.[1;31membed[mding_provider = [1;31membed[mding_provider
+[35mrag/context_retrieval.py[m[36m:[m        [1;31membed[mding = await self.[1;31membed[mding_provider.[1;31membed[m(request.prompt)
+[35mrag/context_retrieval.py[m[36m:[m        results = await self.vector_db.search([1;31membed[mding, top_k=8, metadata_filter=metadata_filter)
+[35mrag/context_retrieval.py[m[36m:[m    def __init__(self, api_key: str, model: str = "text-[1;31membed[mding-3-large", logger: Any | None = None) -> None:
+[35mrag/context_retrieval.py[m[36m:[m    async def [1;31membed[m(self, text: str) -> list[float]:
+[35mrag/context_retrieval.py[m[36m:[m            self.logger.debug("Generating [1;31membed[mding for text length=%d", len(text))

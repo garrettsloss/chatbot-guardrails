@@ -6,6 +6,8 @@ from typing import Any
 
 from core.types import ChatResponse
 
+from openai import AsyncAzureOpenAI
+from core.config import get_config
 
 class LLMClientError(Exception):
     pass
@@ -31,15 +33,40 @@ class OpenAIClientAdapter(BaseLLMClient):
         self.model = model
         self.logger = logger
 
-    async def generate(self, prompt_payload: dict[str, Any], timeout: int | None = 60) -> ChatResponse:
+    async def generate(
+        self,
+        prompt_payload: dict[str, Any],
+        timeout: int | None = 60
+    ) -> ChatResponse:
+
+        config = get_config()
+
         if self.logger:
-            self.logger.debug("Calling OpenAI-compatible API with model %s", self.model)
-        await asyncio.sleep(0)
+            self.logger.debug("Calling Azure OpenAI with model %s", self.model)
+
+        client = AsyncAzureOpenAI(
+            api_key=config.azure_openai_api_key,
+            api_version=config.azure_openai_api_version,
+            azure_endpoint=config.azure_openai_endpoint,
+        )
+
+        messages = prompt_payload.get("messages", [
+            {"role": "user", "content": prompt_payload.get("prompt", "")}
+        ])
+
+        response = await client.chat.completions.create(
+            model=self.model,  # Azure deployment name
+            messages=messages,
+            temperature=0.7,
+        )
+
+        text = response.choices[0].message.content
+
         return ChatResponse(
             request_id=prompt_payload.get("request_id", "llm"),
-            timestamp=prompt_payload.get("timestamp", None) or __import__("datetime").datetime.utcnow(),
-            source_module="llm.client.openai",
-            response_text="[generated response placeholder]",
+            timestamp=__import__("datetime").datetime.utcnow(),
+            source_module="llm.client.azure",
+            response_text=text,
             safe=True,
             policy_action=None,
             reasons=[],

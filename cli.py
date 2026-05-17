@@ -25,12 +25,7 @@ from tools.gateway import ToolRegistry
 from pipeline.orchestrator import Orchestrator
 
 
-class InMemoryVectorDB(VectorDBClient):
-    async def upsert(self, documents: list[ContextDocument]) -> None:
-        pass
-
-    async def search(self, embedding: list[float], top_k: int, metadata_filter: dict[str, Any] | None = None) -> list[ContextDocument]:
-        return []
+from core.chroma_db import ChromaVectorDB
 
 
 def build_components(config: Any) -> Orchestrator:
@@ -40,7 +35,18 @@ def build_components(config: Any) -> Orchestrator:
     rate_limiter = RateLimiter(config)
     input_filter = InputFilter()
     policy_engine = PolicyEngine(Path("policies.yml"))
-    retriever = ContextRetriever(OpenAIEmbeddingProvider(config.api_key, config.embedding_model), InMemoryVectorDB())
+    
+    vector_db = ChromaVectorDB(path="./data/chroma")
+
+    embedding_provider = OpenAIEmbeddingProvider(
+        config.api_key,
+        config.embedding_model
+    )
+
+    retriever = ContextRetriever(
+        embedding_provider,
+        vector_db
+    )
     sanitizer = ContextSanitizer()
     prompt_builder = PromptBuilder(model_template="You are a safety-first assistant.")
     llm_client = OpenAIClientAdapter(config.api_key, config.openai_model)

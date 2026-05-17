@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from core.chroma_db import ChromaVectorDB
+
 from core.config import AppConfig
 from core.events import EventBus
 from core.types import (

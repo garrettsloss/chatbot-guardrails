@@ -3,8 +3,8 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any
 
-from pydantic import BaseSettings, ConfigDict, Field, validator
-
+from pydantic import ConfigDict, Field, validator
+from pydantic_settings import BaseSettings
 
 class AppConfig(BaseSettings):
     api_key: str = Field(..., env="API_KEY")
@@ -18,6 +18,9 @@ class AppConfig(BaseSettings):
     audit_log_file: str = Field("logs/audit.log", env="AUDIT_LOG_FILE")
     redis_url: str | None = Field(default=None, env="REDIS_URL")
     environment: str = Field("development", env="ENVIRONMENT")
+    azure_openai_endpoint: str
+    azure_openai_api_key: str
+    azure_openai_api_version: str = "2025-03-01-preview"
 
     model_config = ConfigDict(env_file=".env", extra="forbid")
 

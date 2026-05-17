@@ -39,4 +39,3 @@ class PromptBuilder:
 
     def _estimate_tokens(self, messages: list[dict[str, str]]) -> int:
         return sum(len(message["content"]) // 4 + 1 for message in messages)
-\

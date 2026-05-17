@@ -51,8 +51,27 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         self.logger = logger
 
     async def embed(self, text: str) -> list[float]:
-        # Placeholder implementation. Replace with OpenAI-compatible API client in production.
+        from openai import AsyncAzureOpenAI
+        from core.config import get_config
+
+        config = get_config()
+
         if self.logger:
-            self.logger.debug("Generating embedding for text length=%d", len(text))
-        await asyncio.sleep(0)
-        return [0.0] * 1536
+            self.logger.debug(
+                "Generating embedding for text length=%d",
+                len(text),
+            )
+
+        client = AsyncAzureOpenAI(
+            api_key=config.azure_openai_api_key,
+            api_version=config.azure_openai_api_version,
+            azure_endpoint=config.azure_openai_endpoint,
+        )
+
+        response = await client.embeddings.create(
+            model=self.model,  # MUST be Azure deployment name
+            input=text,
+        )
+
+        return response.data[0].embedding
+

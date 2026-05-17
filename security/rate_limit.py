@@ -4,7 +4,7 @@ import asyncio
 import time
 from typing import Any, Optional
 
-from aioredis import Redis, from_url
+from redis.asyncio import Redis
 from core.config import AppConfig
 
 
