@@ -7,7 +7,12 @@ from core.types import ContextDocument
 
 
 class ContextSanitizer:
-    hidden_instruction_pattern = re.compile(r"<hidden_instruction>|ignore.*instructions|follow.*secret", re.IGNORECASE)
+    # Match full hidden-instruction blocks (tag + contents + closing tag) so that
+    # the injected payload is removed entirely, not just the opening tag.
+    hidden_instruction_pattern = re.compile(
+        r"<hidden_instruction>.*?</hidden_instruction>|ignore.*?instructions|follow.*?secret",
+        re.IGNORECASE | re.DOTALL,
+    )
     encoded_payload_pattern = re.compile(r"(?:base64|hex)\s*[:=]", re.IGNORECASE)
 
     async def sanitize_document(self, document: ContextDocument) -> ContextDocument:

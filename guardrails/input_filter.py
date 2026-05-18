@@ -96,14 +96,16 @@ class HarmfulContentDetector(InputFilterDetector):
     """
 
     _PATTERNS = [
-        # Bomb / explosive fabrication
-        r"\b(make|build|create|craft|assemble|fabricate)\s+a?\s*(bomb|explosive|grenade|ied|detonator)\b",
+        # Bomb / explosive fabrication — covers "make a bomb", "build explosives", etc.
+        r"\b(make|build|create|craft|assemble|fabricate)\s+a?\s*(bombs?|explosives?|grenades?|ied|detonators?)\b",
+        # "how to / how do I" variants for bomb/explosive making
+        r"\bhow\s+(to|do\s+i|can\s+i)\s+(make|build|create|craft)\s+(a\s+)?(bomb|explosives?|grenade)\b",
         # Chemical / biological weapons
         r"\b(chemical\s+weapon|bioweapon|nerve\s+agent|sarin|vx\s+gas|weaponize\s+.{0,20}(virus|bacteria|toxin))\b",
         # Explicit violence instructions
-        r"\bhow\s+to\s+(kill|murder|harm|hurt|attack)\s+(someone|people|a\s+person|humans|everybody|anyone|civilians)\b",
-        # Firearm / weapon manufacturing
-        r"\bhow\s+to\s+(make|build|manufacture|print|modify)\s+a?\s*(gun|firearm|rifle|pistol|silencer)\b",
+        r"\bhow\s+(to|do\s+i|can\s+i)\s+(kill|murder|harm|hurt|attack)\s+(someone|people|a\s+person|humans|everybody|anyone|civilians)\b",
+        # Firearm / weapon manufacturing — covers "how to build" and "how do I build"
+        r"\bhow\s+(to|do\s+i|can\s+i)\s+(make|build|manufacture|print|modify)\s+(a\s+)?(gun|firearm|rifle|pistol|silencer)\b",
         # Illicit drug synthesis
         r"\bhow\s+to\s+(make|synthesize|cook|produce|manufacture)\s+(meth|heroin|fentanyl|crack\s+cocaine|illegal\s+drug)\b",
     ]
@@ -208,7 +210,14 @@ class InputFilter:
 
         total_weight = sum(detector.weight for detector in self.detectors)
         aggregated_score = sum(result.risk_score * self.detectors[index].weight for index, result in enumerate(results)) / max(total_weight, 1)
-        reasons = [reason for result in results for reason in result.reasons]
+        # Only surface reasons from detectors that actually found something;
+        # "clean" / "no_injection" etc. from passing detectors add noise to logs.
+        reasons = [
+            reason
+            for result in results
+            for reason in result.reasons
+            if not result.allowed or result.risk_score > 0.05
+        ] or ["no_specific_reason"]
         allowed = aggregated_score < threshold and all(result.allowed for result in results)
 
         return ModerationResult(

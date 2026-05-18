@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from core.types import AuditEvent, EventType, ModerationResult
 
 
@@ -13,16 +15,23 @@ class OutputFilter:
     """
 
     def __init__(self, topic_keywords: list[str] | None = None) -> None:
-        self.topic_keywords = [kw.lower() for kw in (topic_keywords or [])]
+        keywords = [kw.lower() for kw in (topic_keywords or [])]
+        # Pre-compile a single word-boundary regex for efficient matching.
+        # Word boundaries prevent short keywords like "pot" from matching
+        # unrelated words like "hypotenuse".
+        if keywords:
+            pattern = r'\b(?:' + '|'.join(re.escape(kw) for kw in keywords) + r')\b'
+            self._topic_pattern: re.Pattern | None = re.compile(pattern)
+        else:
+            self._topic_pattern = None
 
     async def filter(self, response_text: str, threshold: float = 0.8) -> ModerationResult:
         length_risk = 0.1 if len(response_text) < 1000 else 0.3
 
         topic_risk = 0.0
         reason = "safe"
-        if self.topic_keywords and len(response_text) > 80:
-            text_lower = response_text.lower()
-            has_topic_content = any(kw in text_lower for kw in self.topic_keywords)
+        if self._topic_pattern and len(response_text) > 80:
+            has_topic_content = bool(self._topic_pattern.search(response_text.lower()))
             if not has_topic_content:
                 # Response is substantive but contains zero topic keywords —
                 # likely off-topic LLM output despite the system prompt.

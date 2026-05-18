@@ -86,6 +86,7 @@ def build_components(config: Any, topic_profile: dict[str, Any]) -> Orchestrator
     tool_registry = ToolRegistry()
 
     rejection_messages = {
+        "harmful": "I'm not able to help with that request. If you have a gardening question, I'd be happy to help!",
         "injection": topic_profile["injection_response"],
         "off_topic": topic_profile["off_topic_response"],
         "output_failure": "I'm sorry, I couldn't generate a safe response. Please try rephrasing.",

@@ -56,6 +56,7 @@ class Orchestrator:
         self.tool_gateway = tool_gateway
         self.audit_logger = audit_logger
         self.rejection_messages: dict[str, str] = rejection_messages or {
+            "harmful": "I'm not able to help with that. Please ask me a relevant question.",
             "injection": "I detected an attempt to manipulate my instructions. Please ask a genuine question.",
             "off_topic": "I can only discuss the assigned topic. Please ask a relevant question.",
             "output_failure": "I'm sorry, I couldn't generate a safe response. Please try rephrasing.",
@@ -178,6 +179,8 @@ class Orchestrator:
 
     def _pick_rejection_message(self, reasons: list[str]) -> str:
         reasons_str = " ".join(reasons).lower()
+        if "harmful" in reasons_str or "azure_content_filter" in reasons_str:
+            return self.rejection_messages.get("harmful", self.rejection_messages["default"])
         if "injection" in reasons_str or "jailbreak" in reasons_str:
             return self.rejection_messages.get("injection", self.rejection_messages["default"])
         if "off_topic" in reasons_str or "topic" in reasons_str:
