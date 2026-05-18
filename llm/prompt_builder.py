@@ -23,10 +23,9 @@ class PromptBuilder:
         history = history or []
         context_text = "\n\n".join([f"Source: {doc.source}\n{doc.content}" for doc in context])
         system_message = self.model_template.strip()
-        messages = [
-            {"role": "system", "content": system_message},
-            {"role": "system", "content": context_text},
-        ]
+        messages: list[dict[str, str]] = [{"role": "system", "content": system_message}]
+        if context_text:
+            messages.append({"role": "system", "content": f"Relevant context:\n{context_text}"})
         messages.extend(history)
         messages.append({"role": "user", "content": user_prompt})
         token_estimate = self._estimate_tokens(messages)

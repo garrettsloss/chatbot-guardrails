@@ -22,6 +22,11 @@ class AppConfig(BaseSettings):
     azure_openai_api_key: str
     azure_openai_api_version: str = "2025-03-01-preview"
 
+    # Topic configuration — change CHATBOT_TOPIC to switch the restricted domain
+    topic: str = Field("gardening", env="CHATBOT_TOPIC")
+    topic_relevance_threshold: float = Field(0.30, env="TOPIC_RELEVANCE_THRESHOLD")
+    max_history_turns: int = Field(10, env="MAX_HISTORY_TURNS")
+
     model_config = ConfigDict(env_file=".env", extra="forbid")
 
     @validator("moderation_thresholds")

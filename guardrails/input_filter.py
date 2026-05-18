@@ -84,6 +84,48 @@ class JailbreakDetector(InputFilterDetector):
         )
 
 
+class HarmfulContentDetector(InputFilterDetector):
+    """
+    Blocks requests containing clearly dangerous or illegal content (e.g. bomb-making,
+    weapons manufacturing, explicit violence instructions).
+
+    This acts as a universal safety gate independent of the active topic, providing
+    a last line of defence before off-topic requests even reach the embedding check.
+    Uses specific multi-word patterns to minimise false positives (e.g. 'seed bomb'
+    is not flagged because no action verb precedes it).
+    """
+
+    _PATTERNS = [
+        # Bomb / explosive fabrication
+        r"\b(make|build|create|craft|assemble|fabricate)\s+a?\s*(bomb|explosive|grenade|ied|detonator)\b",
+        # Chemical / biological weapons
+        r"\b(chemical\s+weapon|bioweapon|nerve\s+agent|sarin|vx\s+gas|weaponize\s+.{0,20}(virus|bacteria|toxin))\b",
+        # Explicit violence instructions
+        r"\bhow\s+to\s+(kill|murder|harm|hurt|attack)\s+(someone|people|a\s+person|humans|everybody|anyone|civilians)\b",
+        # Firearm / weapon manufacturing
+        r"\bhow\s+to\s+(make|build|manufacture|print|modify)\s+a?\s*(gun|firearm|rifle|pistol|silencer)\b",
+        # Illicit drug synthesis
+        r"\bhow\s+to\s+(make|synthesize|cook|produce|manufacture)\s+(meth|heroin|fentanyl|crack\s+cocaine|illegal\s+drug)\b",
+    ]
+
+    def __init__(self, weight: float = 3.0) -> None:
+        super().__init__("harmful_content", weight)
+        self.patterns = [re.compile(p, re.IGNORECASE | re.DOTALL) for p in self._PATTERNS]
+
+    async def analyze(self, request: ChatRequest) -> ModerationResult:
+        matched = [p.pattern for p in self.patterns if p.search(request.prompt)]
+        allowed = not bool(matched)
+        return ModerationResult(
+            request_id=request.request_id,
+            timestamp=request.timestamp,
+            source_module="guardrails.input_filter.harmful_content",
+            allowed=allowed,
+            risk_score=1.0 if matched else 0.0,
+            reasons=["harmful_content_detected" if matched else "safe"],
+            details={"matched_patterns": matched},
+        )
+
+
 class PIIDetector(InputFilterDetector):
     def __init__(self, weight: float = 1.0) -> None:
         super().__init__("pii", weight)

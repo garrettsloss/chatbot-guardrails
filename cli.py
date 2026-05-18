@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import argparse
 import asyncio
 import logging
+import os
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -10,48 +10,87 @@ from typing import Any
 
 from core.config import get_config
 from core.events import EventBus
-from core.types import ChatRequest, ContextDocument, UserSession
+from core.types import ChatRequest, UserSession
 from guardrails.context_sanitizer import ContextSanitizer
-from guardrails.input_filter import InputFilter
+from guardrails.input_filter import (
+    HarmfulContentDetector,
+    InputFilter,
+    JailbreakDetector,
+    PIIDetector,
+    PromptInjectionDetector,
+    RegexRuleDetector,
+    SpamDetector,
+    UnicodeObfuscationDetector,
+)
 from guardrails.output_filter import OutputFilter
 from guardrails.policy_engine import PolicyEngine
+from guardrails.topic_guard import (
+    TopicEmbeddingDetector,
+    TopicKeywordDetector,
+    get_topic_profile,
+)
 from llm.client import OpenAIClientAdapter
 from llm.prompt_builder import PromptBuilder
-from observability.audit import AuditLogger, ConsoleAuditProvider
-from rag.context_retrieval import ContextRetriever, OpenAIEmbeddingProvider, VectorDBClient
+from observability.audit import AuditLogger, SilentAuditProvider
+from rag.context_retrieval import ContextRetriever, OpenAIEmbeddingProvider
 from security.auth import AuthManager
 from security.rate_limit import RateLimiter
 from tools.gateway import ToolRegistry
 from pipeline.orchestrator import Orchestrator
-
-
 from core.chroma_db import ChromaVectorDB
 
 
-def build_components(config: Any) -> Orchestrator:
+def build_components(config: Any, topic_profile: dict[str, Any]) -> Orchestrator:
     event_bus = EventBus()
-    audit_logger = AuditLogger([ConsoleAuditProvider()])
+    audit_logger = AuditLogger([SilentAuditProvider()])
     auth_manager = AuthManager(config)
     rate_limiter = RateLimiter(config)
-    input_filter = InputFilter()
-    policy_engine = PolicyEngine(Path("policies.yml"))
-    
+
     vector_db = ChromaVectorDB(path="./data/chroma")
-
-    embedding_provider = OpenAIEmbeddingProvider(
-        config.api_key,
-        config.embedding_model
-    )
-
-    retriever = ContextRetriever(
-        embedding_provider,
-        vector_db
-    )
+    embedding_provider = OpenAIEmbeddingProvider(config.api_key, config.embedding_model)
+    retriever = ContextRetriever(embedding_provider, vector_db)
     sanitizer = ContextSanitizer()
-    prompt_builder = PromptBuilder(model_template="You are a safety-first assistant.")
+
+    # Layered input guardrails — every request passes through all detectors in parallel:
+    #   Layer 1 — regex rules: blocks shutdown/delete commands
+    #   Layer 2 — harmful content: blocks weapon/explosive/violence instructions (Azure-independent)
+    #   Layer 3 — prompt injection & jailbreak phrase detection
+    #   Layer 4 — PII detection (SSN, credit card patterns)
+    #   Layer 5 — spam detection (repeated-word flooding)
+    #   Layer 6 — unicode obfuscation detection
+    #   Layer 7 — topic keyword pre-filter (fast, no API call)
+    #   Layer 8 — topic embedding similarity via Ada-002 (semantic gate, definitive off-topic block)
+    input_filter = InputFilter(detectors=[
+        RegexRuleDetector([r"\bshutdown\b", r"\bdelete\b"]),
+        HarmfulContentDetector(),
+        PromptInjectionDetector(),
+        JailbreakDetector(),
+        PIIDetector(),
+        SpamDetector(),
+        UnicodeObfuscationDetector(),
+        TopicKeywordDetector(topic_profile["keywords"]),
+        TopicEmbeddingDetector(
+            embedding_provider,
+            topic_profile["anchor_phrases"],
+            threshold=config.topic_relevance_threshold,
+        ),
+    ])
+
+    policy_engine = PolicyEngine(Path("policies.yml"))
+
+    # Topic-aware output filter — flags substantive responses with no topic content
+    output_filter = OutputFilter(topic_keywords=topic_profile["keywords"])
+
+    prompt_builder = PromptBuilder(model_template=topic_profile["system_prompt"])
     llm_client = OpenAIClientAdapter(config.api_key, config.openai_model)
-    output_filter = OutputFilter()
     tool_registry = ToolRegistry()
+
+    rejection_messages = {
+        "injection": topic_profile["injection_response"],
+        "off_topic": topic_profile["off_topic_response"],
+        "output_failure": "I'm sorry, I couldn't generate a safe response. Please try rephrasing.",
+        "default": topic_profile["off_topic_response"],
+    }
 
     return Orchestrator(
         config=config,
@@ -67,10 +106,16 @@ def build_components(config: Any) -> Orchestrator:
         output_filter=output_filter,
         tool_gateway=tool_registry,
         audit_logger=audit_logger,
+        rejection_messages=rejection_messages,
     )
 
 
-def build_request(prompt: str, user_id: str, session_id: str) -> ChatRequest:
+def build_request(
+    prompt: str,
+    user_id: str,
+    session_id: str,
+    history: list[dict[str, str]] | None = None,
+) -> ChatRequest:
     return ChatRequest(
         request_id=str(uuid.uuid4()),
         timestamp=datetime.utcnow(),
@@ -78,7 +123,7 @@ def build_request(prompt: str, user_id: str, session_id: str) -> ChatRequest:
         user_id=user_id,
         session_id=session_id,
         prompt=prompt,
-        conversation_history=[],
+        conversation_history=history or [],
         metadata={"source": "cli"},
     )
 
@@ -96,29 +141,129 @@ def build_session(user_id: str, session_id: str, roles: list[str]) -> UserSessio
     )
 
 
+def _setup_logging() -> None:
+    os.makedirs("logs", exist_ok=True)
+
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+
+    # Console: WARNING+ only — keeps the chatbot output uncluttered.
+    # Denial warnings are logged at WARNING so they surface here.
+    console = logging.StreamHandler()
+    console.setLevel(logging.WARNING)
+    console.setFormatter(logging.Formatter("%(message)s"))
+    root.addHandler(console)
+
+    # File: INFO+ — full audit trail including token usage, every denial
+    # with reasons, and pipeline events. Rotates at 5 MB.
+    from logging.handlers import RotatingFileHandler
+    fh = RotatingFileHandler("logs/guardrails.log", maxBytes=5_000_000, backupCount=3)
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    root.addHandler(fh)
+
+
+async def _chat_loop(
+    orchestrator: Orchestrator,
+    session: UserSession,
+    topic_profile: dict[str, Any],
+    config: Any,
+) -> None:
+    """
+    Runs the interactive chat loop inside a single persistent event loop.
+
+    Using a single asyncio.run() call (rather than one per turn) keeps the
+    httpx connection pool alive across turns, eliminating the 'Event loop is
+    closed' errors that occur when asyncio.run() tears down its loop while
+    httpx still has pending cleanup tasks.
+
+    Blocking input() is dispatched to a thread executor so the event loop
+    remains free to process async work while waiting for the user to type.
+    """
+    display_name = topic_profile["display_name"]
+    conversation_history: list[dict[str, str]] = []
+    loop = asyncio.get_running_loop()
+    turn = 0
+
+    print(f"\n{'=' * 60}")
+    print(f"  {display_name}")
+    print(f"{'=' * 60}")
+    print("Type 'quit' or 'exit' to end the conversation.\n")
+
+    while True:
+        # Read user input without blocking the event loop
+        try:
+            user_input = await loop.run_in_executor(None, lambda: input("You: "))
+            user_input = user_input.strip()
+        except (EOFError, KeyboardInterrupt, asyncio.CancelledError):
+            print(f"\n{display_name}: Goodbye!")
+            break
+
+        if not user_input:
+            continue
+
+        if user_input.lower() in ("quit", "exit", "q", "bye"):
+            print(f"\n{display_name}: Goodbye! Happy gardening!")
+            break
+
+        request = build_request(user_input, "cli-user", session.session_id, conversation_history)
+
+        try:
+            response = await orchestrator.process(request, session)
+        except PermissionError as exc:
+            print(f"\n{display_name}: {exc}\n")
+            continue
+        except Exception as exc:
+            logging.error("Pipeline error: %s", exc, exc_info=True)
+            print(f"\n{display_name}: Something went wrong. Please try again.\n")
+            continue
+
+        # Log token usage per turn to the audit file (not shown on console)
+        turn += 1
+        total_tokens = (response.metadata or {}).get("total_tokens", 0)
+        if total_tokens:
+            logging.getLogger(__name__).info(
+                "TOKEN_USAGE | turn=%d | total=%d | prompt=%s | completion=%s",
+                turn,
+                total_tokens,
+                (response.metadata or {}).get("prompt_tokens", "?"),
+                (response.metadata or {}).get("completion_tokens", "?"),
+            )
+
+        print(f"\n{display_name}: {response.response_text}\n")
+
+        # Only include genuine (non-blocked) exchanges in history so the LLM
+        # does not see rejected turns as prior context.
+        if response.safe:
+            conversation_history.append({"role": "user", "content": user_input})
+            conversation_history.append({"role": "assistant", "content": response.response_text})
+
+            # Trim to the configured rolling window to prevent context overflow.
+            # Each turn = 2 entries (user + assistant); oldest are dropped first.
+            max_messages = config.max_history_turns * 2
+            if len(conversation_history) > max_messages:
+                conversation_history = conversation_history[-max_messages:]
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run the chatbot guardrails pipeline from CLI.")
-    parser.add_argument("--prompt", required=True, help="User prompt text")
-    parser.add_argument("--user-id", default="user-1", help="User identifier")
-    parser.add_argument("--session-id", default="session-1", help="Session identifier")
-    parser.add_argument("--roles", default="user", help="Comma-separated roles")
-    args = parser.parse_args()
+    _setup_logging()
 
-    logging.basicConfig(level=logging.INFO)
     config = get_config()
+    topic_profile = get_topic_profile(config.topic)
 
-    orchestrator = build_components(config)
-    request = build_request(args.prompt, args.user_id, args.session_id)
-    session = build_session(args.user_id, args.session_id, [role.strip() for role in args.roles.split(",")])
+    orchestrator = build_components(config, topic_profile)
 
+    session_id = str(uuid.uuid4())
+    session = build_session("cli-user", session_id, ["user"])
+
+    # A single asyncio.run() keeps one event loop alive for the entire session.
+    # This prevents the 'Event loop is closed' errors that httpx raises when
+    # asyncio.run() tears down its loop while connection-pool cleanup tasks are
+    # still pending.
     try:
-        response = asyncio.run(orchestrator.process(request, session))
-        if hasattr(response, "response_text"):
-            print(response.response_text)
-            return 0
-    except Exception as exc:
-        logging.error("Pipeline error: %s", exc)
-        return 1
+        asyncio.run(_chat_loop(orchestrator, session, topic_profile, config))
+    except KeyboardInterrupt:
+        pass
 
     return 0
 

@@ -40,6 +40,19 @@ class FileAuditProvider(AuditProvider):
         return event.model_dump()
 
 
+class SilentAuditProvider(AuditProvider):
+    """Logs audit events via Python's logging system at DEBUG level (no console noise)."""
+
+    def emit(self, event: AuditEvent) -> None:
+        logging.getLogger("observability.audit").debug(
+            json.dumps(self._serialize(event), default=str)
+        )
+
+    @staticmethod
+    def _serialize(event: AuditEvent) -> dict[str, Any]:
+        return event.model_dump()
+
+
 class AuditLogger:
     def __init__(self, providers: list[AuditProvider]) -> None:
         self.providers = providers

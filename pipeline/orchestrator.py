@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import asyncio
+import logging
 from typing import Any
 
 from core.chroma_db import ChromaVectorDB
 
+logger = logging.getLogger(__name__)
 from core.config import AppConfig
 from core.events import EventBus
 from core.types import (
@@ -15,6 +16,7 @@ from core.types import (
     EventType,
     ModerationResult,
     PipelineContext,
+    PolicyAction,
     PolicyDecision,
     ToolCall,
     ToolResult,
@@ -38,6 +40,7 @@ class Orchestrator:
         output_filter: Any,
         tool_gateway: Any,
         audit_logger: Any,
+        rejection_messages: dict[str, str] | None = None,
     ) -> None:
         self.config = config
         self.event_bus = event_bus
@@ -52,8 +55,19 @@ class Orchestrator:
         self.output_filter = output_filter
         self.tool_gateway = tool_gateway
         self.audit_logger = audit_logger
+        self.rejection_messages: dict[str, str] = rejection_messages or {
+            "injection": "I detected an attempt to manipulate my instructions. Please ask a genuine question.",
+            "off_topic": "I can only discuss the assigned topic. Please ask a relevant question.",
+            "output_failure": "I'm sorry, I couldn't generate a safe response. Please try rephrasing.",
+            "default": "I'm sorry, I can't help with that.",
+        }
 
-    async def process(self, request: ChatRequest, session: UserSession | None, client_ip: str | None = None) -> ChatResponse:
+    async def process(
+        self,
+        request: ChatRequest,
+        session: UserSession | None,
+        client_ip: str | None = None,
+    ) -> ChatResponse:
         pipeline = PipelineContext(
             request_id=request.request_id,
             timestamp=request.timestamp,
@@ -71,17 +85,27 @@ class Orchestrator:
         if not await self.rate_limiter.check_user(session.session_id):
             raise PermissionError("User rate limit exceeded")
 
-        input_moderation = await self.input_filter.filter(request, self.config.moderation_thresholds.get("review", 0.5))
+        # --- Layer 1-3: input moderation (injection, jailbreak, PII, topic) ---
+        input_moderation = await self.input_filter.filter(
+            request, self.config.moderation_thresholds.get("review", 0.5)
+        )
         pipeline.input_moderation = input_moderation
         await self._publish(EventType.MODERATION, request.request_id, input_moderation.model_dump())
 
+        if not input_moderation.allowed:
+            message = self._pick_rejection_message(input_moderation.reasons)
+            return self._rejection_response(request, message, input_moderation.reasons)
+
+        # --- Layer 3: policy engine (YAML rules) ---
         policy_decision = self.policy_engine.evaluate(request, input_moderation, session)
         pipeline.policy_decision = policy_decision
         await self._publish(EventType.POLICY_DECISION, request.request_id, policy_decision.model_dump())
 
         if not policy_decision.allowed:
-            raise PermissionError("Policy rejected request")
+            message = self._pick_rejection_message(policy_decision.reasons)
+            return self._rejection_response(request, message, policy_decision.reasons)
 
+        # --- RAG retrieval + context sanitization ---
         retrieved_context = await self.retriever.retrieve(request)
         pipeline.retrieved_context = retrieved_context
         await self._publish(EventType.CONTEXT_RETRIEVAL, request.request_id, {"documents": len(retrieved_context)})
@@ -90,21 +114,42 @@ class Orchestrator:
         pipeline.sanitized_context = sanitized_context
         await self._publish(EventType.CONTEXT_SANITIZATION, request.request_id, {"documents": len(sanitized_context)})
 
+        # --- Prompt construction + LLM call ---
         prompt_payload = self.prompt_builder.build(request.prompt, sanitized_context, request.conversation_history)
         pipeline.prompt_payload = prompt_payload.model_dump() if hasattr(prompt_payload, "model_dump") else prompt_payload.__dict__
         await self._publish(EventType.PROMPT_BUILD, request.request_id, {"token_estimate": prompt_payload.token_estimate})
 
-        llm_response = await self.llm_client.generate(prompt_payload.__dict__ if hasattr(prompt_payload, "__dict__") else prompt_payload, timeout=60)
+        llm_response = await self.llm_client.generate(
+            prompt_payload.__dict__ if hasattr(prompt_payload, "__dict__") else prompt_payload,
+            timeout=60,
+        )
         pipeline.llm_response = llm_response.response_text
-        await self._publish(EventType.LLM_CALL, request.request_id, {"response_length": len(llm_response.response_text)})
 
-        output_moderation = await self.output_filter.filter(llm_response.response_text, self.config.moderation_thresholds.get("block", 0.8))
+        # Handle Azure content filter or any other LLM-level block
+        if not llm_response.safe:
+            message = self._pick_rejection_message(llm_response.reasons)
+            return self._rejection_response(request, message, llm_response.reasons)
+
+        token_meta = llm_response.metadata or {}
+        await self._publish(EventType.LLM_CALL, request.request_id, {
+            "response_length": len(llm_response.response_text),
+            "total_tokens": token_meta.get("total_tokens", 0),
+            "prompt_tokens": token_meta.get("prompt_tokens", 0),
+            "completion_tokens": token_meta.get("completion_tokens", 0),
+        })
+
+        # --- Layer 4: output moderation ---
+        output_moderation = await self.output_filter.filter(
+            llm_response.response_text, self.config.moderation_thresholds.get("block", 0.8)
+        )
         pipeline.output_moderation = output_moderation
         await self._publish(EventType.MODERATION, request.request_id, output_moderation.model_dump())
 
         if not output_moderation.allowed:
-            raise PermissionError("Output moderation failed")
+            message = self.rejection_messages.get("output_failure", self.rejection_messages["default"])
+            return self._rejection_response(request, message, output_moderation.reasons)
 
+        # --- Tool execution (optional) ---
         final_response = llm_response
         if pipeline.tool_calls:
             tool_results: list[ToolResult] = []
@@ -130,6 +175,34 @@ class Orchestrator:
         await self._publish(EventType.RESPONSE_DELIVERED, request.request_id, audit_event.payload)
 
         return final_response
+
+    def _pick_rejection_message(self, reasons: list[str]) -> str:
+        reasons_str = " ".join(reasons).lower()
+        if "injection" in reasons_str or "jailbreak" in reasons_str:
+            return self.rejection_messages.get("injection", self.rejection_messages["default"])
+        if "off_topic" in reasons_str or "topic" in reasons_str:
+            return self.rejection_messages.get("off_topic", self.rejection_messages["default"])
+        return self.rejection_messages["default"]
+
+    def _rejection_response(
+        self, request: ChatRequest, message: str, reasons: list[str]
+    ) -> ChatResponse:
+        logger.warning(
+            "DENIED | request_id=%s | user=%s | reasons=[%s] | prompt=%.80r",
+            request.request_id,
+            request.user_id,
+            ", ".join(reasons),
+            request.prompt,
+        )
+        return ChatResponse(
+            request_id=request.request_id,
+            timestamp=request.timestamp,
+            source_module="pipeline.orchestrator",
+            response_text=message,
+            safe=False,
+            policy_action=PolicyAction.DENY,
+            reasons=reasons,
+        )
 
     async def _publish(self, event_type: EventType, request_id: str, payload: dict[str, Any]) -> None:
         event = AuditEvent(
