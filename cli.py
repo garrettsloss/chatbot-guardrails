@@ -16,6 +16,7 @@ from guardrails.input_filter import (
     HarmfulContentDetector,
     InputFilter,
     JailbreakDetector,
+    LLMHarmfulContentDetector,
     PIIDetector,
     PromptInjectionDetector,
     RegexRuleDetector,
@@ -53,16 +54,19 @@ def build_components(config: Any, topic_profile: dict[str, Any]) -> Orchestrator
 
     # Layered input guardrails — every request passes through all detectors in parallel:
     #   Layer 1 — regex rules: blocks shutdown/delete commands
-    #   Layer 2 — harmful content: blocks weapon/explosive/violence instructions (Azure-independent)
-    #   Layer 3 — prompt injection & jailbreak phrase detection
-    #   Layer 4 — PII detection (SSN, credit card patterns)
-    #   Layer 5 — spam detection (repeated-word flooding)
-    #   Layer 6 — unicode obfuscation detection
-    #   Layer 7 — topic keyword pre-filter (fast, no API call)
-    #   Layer 8 — topic embedding similarity via Ada-002 (semantic gate, definitive off-topic block)
+    #   Layer 2 — harmful content (regex): fast pattern-match for known dangerous phrases
+    #   Layer 3 — harmful content (LLM): GPT-4.1-mini classifier catches creative rephrasing
+    #   Layer 4 — prompt injection & jailbreak phrase detection
+    #   Layer 5 — PII detection (SSN, credit card patterns)
+    #   Layer 6 — spam detection (repeated-word flooding)
+    #   Layer 7 — unicode obfuscation detection
+    #   Layer 8 — topic keyword pre-filter (fast, no API call)
+    #   Layer 9 — topic embedding similarity via Ada-002 (semantic gate, definitive off-topic block)
+    # Layers 2–3 run concurrently; the LLM classifier adds one fast parallel API call per turn.
     input_filter = InputFilter(detectors=[
         RegexRuleDetector([r"\bshutdown\b", r"\bdelete\b"]),
         HarmfulContentDetector(),
+        LLMHarmfulContentDetector(),
         PromptInjectionDetector(),
         JailbreakDetector(),
         PIIDetector(),

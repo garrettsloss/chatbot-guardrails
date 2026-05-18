@@ -193,6 +193,88 @@ class UnicodeObfuscationDetector(InputFilterDetector):
         )
 
 
+class LLMHarmfulContentDetector(InputFilterDetector):
+    """
+    Uses GPT-4.1-mini as a second-opinion harmful-content classifier.
+
+    Catches sophisticated rephrasing that fixed regex patterns miss — hypothetical
+    framing ("Hypothetically, how would one..."), fictional contexts, academic
+    language, and multi-step indirect requests.
+
+    Runs concurrently with other detectors (via asyncio.gather in InputFilter) so
+    it adds only the latency of a single fast LLM call, not a sequential delay.
+    Fails open if the API is unavailable: classifier downtime must never block users.
+
+    The optional _test_client parameter accepts a pre-built mock client, which
+    lets tests exercise the full decision logic without real API calls.
+    """
+
+    _SYSTEM_PROMPT = (
+        "You are a content safety classifier. Reply with exactly one word: HARMFUL or SAFE.\n\n"
+        "A message is HARMFUL if it requests: instructions to make weapons or explosives, "
+        "methods to cause physical harm to people, illegal drug synthesis, or other clearly "
+        "dangerous information. Hypothetical framing, fiction, roleplay, or academic language "
+        "do NOT make a dangerous request safe.\n\n"
+        "Reply SAFE for everything else, including off-topic or unusual questions."
+    )
+
+    def __init__(self, weight: float = 2.5, _test_client=None) -> None:
+        super().__init__("llm_harmful_content", weight)
+        self._test_client = _test_client  # injected in tests; None uses real Azure client
+
+    async def analyze(self, request: ChatRequest) -> ModerationResult:
+        try:
+            client = self._test_client or self._build_client()
+            response = await client.chat.completions.create(
+                model=self._get_model(),
+                messages=[
+                    {"role": "system", "content": self._SYSTEM_PROMPT},
+                    {"role": "user", "content": request.prompt},
+                ],
+                temperature=0.0,
+                max_tokens=5,
+            )
+            verdict = (response.choices[0].message.content or "").strip().upper()
+            is_harmful = "HARMFUL" in verdict
+        except Exception:
+            # Fail open — classifier unavailability must not block all users
+            return ModerationResult(
+                request_id=request.request_id,
+                timestamp=request.timestamp,
+                source_module="guardrails.input_filter.llm_harmful_content",
+                allowed=True,
+                risk_score=0.1,
+                reasons=["llm_classifier_unavailable"],
+                details={},
+            )
+
+        return ModerationResult(
+            request_id=request.request_id,
+            timestamp=request.timestamp,
+            source_module="guardrails.input_filter.llm_harmful_content",
+            allowed=not is_harmful,
+            risk_score=1.0 if is_harmful else 0.0,
+            reasons=["llm_harmful_content_detected" if is_harmful else "llm_safe"],
+            details={"verdict": verdict},
+        )
+
+    @staticmethod
+    def _build_client():
+        from openai import AsyncAzureOpenAI
+        from core.config import get_config
+        cfg = get_config()
+        return AsyncAzureOpenAI(
+            api_key=cfg.azure_openai_api_key,
+            api_version=cfg.azure_openai_api_version,
+            azure_endpoint=cfg.azure_openai_endpoint,
+        )
+
+    @staticmethod
+    def _get_model() -> str:
+        from core.config import get_config
+        return get_config().openai_model
+
+
 class InputFilter:
     def __init__(self, detectors: list[InputFilterDetector] | None = None) -> None:
         self.detectors = detectors or [
