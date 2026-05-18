@@ -147,6 +147,10 @@ activemq-data/
 # SageMath parsed files
 *.sage.py
 
+# Project-specific
+logs/                  # audit log files and rotated backups (guardrails.log, .log.1, ...)
+data/chroma/           # ChromaDB vector store (binary; regenerate with ingest scripts)
+
 # Environments
 .env
 .envrc
