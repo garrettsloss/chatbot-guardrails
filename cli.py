@@ -254,7 +254,7 @@ def main() -> int:
     _setup_logging()
 
     config = get_config()
-    topic_profile = get_topic_profile(config.topic)
+    topic_profile = get_topic_profile(config.chatbot_topic)
 
     orchestrator = build_components(config, topic_profile)
 
