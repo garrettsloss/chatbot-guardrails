@@ -70,7 +70,7 @@ Key environment variables:
 | `AZURE_OPENAI_API_KEY` | Azure API key | — |
 | `AZURE_OPENAI_API_VERSION` | API version | `2025-03-01-preview` |
 | `OPENAI_MODEL` | Chat deployment name | `gpt-4.1-mini` |
-| `EMBEDDING_MODEL` | Embedding deployment name | `ada-002` |
+| `EMBEDDING_MODEL` | Embedding deployment name | `text-embedding-ada-002` |
 | `CHATBOT_TOPIC` | Active topic profile | `gardening` |
 | `TOPIC_RELEVANCE_THRESHOLD` | Minimum cosine similarity (0–1) | `0.30` |
 | `MAX_HISTORY_TURNS` | Rolling conversation window | `10` |
