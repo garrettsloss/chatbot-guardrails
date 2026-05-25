@@ -85,6 +85,15 @@ NOT: https://prd-ifb220-apim.azure-api.net/ifb220-ai/openai/deployments/gpt-4.1-
 
 Python must also be allowed to use environment variables in the IDE.
 
+Make sure there are no environment variable confilicts. For example, this checks for previous Azure variables:
+```bash
+! env | grep -i azure
+```
+This deletes applicable conflicts: 
+```bash
+! unset AZURE_OPENAI_API_KEY AZURE_OPENAI_ENDPOINT AZURE_OPENAI_API_VERSION
+```
+
 ---
 
 ## Common problems

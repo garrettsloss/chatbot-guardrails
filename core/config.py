@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from pydantic import ConfigDict, Field, validator
 from pydantic_settings import BaseSettings
+
+_ENV_FILE = Path(__file__).parent.parent / ".env"
 
 class AppConfig(BaseSettings):
     api_key: str = Field(..., env="API_KEY")
@@ -27,7 +30,7 @@ class AppConfig(BaseSettings):
     topic_relevance_threshold: float = Field(0.30, env="TOPIC_RELEVANCE_THRESHOLD")
     max_history_turns: int = Field(10, env="MAX_HISTORY_TURNS")
 
-    model_config = ConfigDict(env_file=".env", extra="forbid")
+    model_config = ConfigDict(env_file=_ENV_FILE, extra="forbid")
 
     @validator("moderation_thresholds")
     def validate_thresholds(cls, value: dict[str, Any]) -> dict[str, Any]:
